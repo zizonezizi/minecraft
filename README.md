@@ -2,243 +2,273 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Simple Web Minecraft Prototype</title>
+    <title>병아리의 모험 - 10단계 미션</title>
     <style>
-        body {
-            margin: 0;
-            overflow: hidden; /* 스크롤바 제거 */
-        }
-        #crosshair {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            width: 20px;
-            height: 20px;
-            background-color: transparent;
-            border: 2px solid white;
-            border-radius: 50%;
-            transform: translate(-50%, -50%);
-            pointer-events: none; /* 마우스 이벤트가 통과하도록 설정 */
-            z-index: 100;
-        }
-        #instructions {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            color: white;
-            background: rgba(0,0,0,0.5);
-            padding: 10px;
-            border-radius: 5px;
-            font-family: monospace;
-            pointer-events: none;
-        }
+        body { margin: 0; background: #222; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; color: white; font-family: 'Courier New', Courier, monospace; overflow: hidden; }
+        canvas { background: #87CEEB; border: 4px solid #fff; box-shadow: 0 0 20px rgba(0,0,0,0.5); image-rendering: pixelated; }
+        .ui { margin-bottom: 10px; text-align: center; }
+        .stats { display: flex; gap: 20px; font-size: 20px; font-weight: bold; }
+        .controls { margin-top: 10px; font-size: 14px; color: #aaa; }
     </style>
-    <script type="importmap">
-        {
-            "imports": {
-                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
-            }
-        }
-    </script>
 </head>
 <body>
-    <div id="crosshair"></div>
-    <div id="instructions">
-        클릭하여 게임 시작<br>
-        이동: W, A, S, D<br>
-        위/아래: Space / Shift<br>
-        블록 설치: 우클릭<br>
-        블록 파괴: 좌클릭<br>
-        시선 이동: 마우스<br>
-        ESC: 마우스 잠금 해제
+
+    <div class="ui">
+        <h1>🐥 병아리의 모험 🐥</h1>
+        <div class="stats">
+            <div>LEVEL: <span id="levelDisplay">1</span> / 10</div>
+            <div>COINS: <span id="coinDisplay">0</span> / 5</div>
+        </div>
     </div>
 
-    <script type="module">
-        import * as THREE from 'three';
-        import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+    <canvas id="gameCanvas" width="800" height="400"></canvas>
 
-        let camera, scene, renderer, controls;
-        let raycaster;
-        const objects = []; // 블록들을 담을 배열
+    <div class="controls">
+        이동: 방향키(←, →) | 점프: Z 또는 Space | 벽타기: 벽에서 방향키 유지 (최대 2초)
+    </div>
 
-        let moveForward = false;
-        let moveBackward = false;
-        let moveLeft = false;
-        let moveRight = false;
-        let moveUp = false;
-        let moveDown = false;
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const levelDisplay = document.getElementById('levelDisplay');
+        const coinDisplay = document.getElementById('coinDisplay');
 
-        const velocity = new THREE.Vector3();
-        const direction = new THREE.Vector3();
+        // 게임 설정
+        const GRAVITY = 0.5;
+        const JUMP_FORCE = -10;
+        const MOVE_SPEED = 4;
+        const CLIMB_TIME_LIMIT = 120; // 60fps 기준 2초
 
-        // 블록 재질 및 지오메트리 공통 사용 (최적화)
-        const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
-        // 잔디 블록 색상 (초록색)
-        const grassMaterial = new THREE.MeshLambertMaterial({ color: 0x55aa55 });
-        // 흙 블록 색상 (갈색 - 우클릭으로 설치 시)
-        const dirtMaterial = new THREE.MeshLambertMaterial({ color: 0x885533 });
+        let currentLevel = 1;
+        let coinsCollected = 0;
+        let gameState = "PLAY"; // PLAY, SUCCESS, GAMEOVER
 
-        init();
-        animate();
+        // 플레이어 객체
+        const player = {
+            x: 50, y: 300, w: 30, h: 30,
+            vx: 0, vy: 0,
+            isGrounded: false,
+            isClimbing: false,
+            climbTimer: 0,
+            facing: 1, // 1: 우, -1: 좌
+            reset(startX, startY) {
+                this.x = startX; this.y = startY;
+                this.vx = 0; this.vy = 0;
+                this.climbTimer = 0;
+                this.isClimbing = false;
+            }
+        };
 
-        function init() {
-            // 1. 씬 설정
-            scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x87ceeb); // 하늘색 배경
-            scene.fog = new THREE.Fog(0x87ceeb, 10, 50); // 안개 효과
+        // 키 입력 관리
+        const keys = {};
+        window.onkeydown = (e) => keys[e.code] = true;
+        window.onkeyup = (e) => keys[e.code] = false;
 
-            // 2. 카메라 설정
-            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            camera.position.y = 2; // 플레이어 눈높이
+        // 맵 데이터 생성 (총 10개)
+        function getLevelData(lvl) {
+            const platforms = [
+                {x: 0, y: 380, w: 2000, h: 20}, // 바닥
+            ];
+            const obstacles = []; // 가시
+            const enemies = [];   // 농부
+            const coins = [];
 
-            // 3. 조명 설정
-            const ambientLight = new THREE.AmbientLight(0xcccccc); // 환경광
-            scene.add(ambientLight);
+            // 난이도별 자동 생성 로직
+            for(let i=1; i<=5; i++) {
+                coins.push({x: 200 * i + (lvl * 20), y: 300 - (Math.sin(i)*50), w: 20, h: 20, collected: false});
+            }
 
-            const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5); // 직사광 (태양)
-            directionalLight.position.set(1, 1, 0.5).normalize();
-            scene.add(directionalLight);
+            // 레벨별 발판 및 장애물 배치 (점진적 난이도)
+            for(let i=1; i<lvl + 2; i++) {
+                platforms.push({x: 300 * i, y: 380 - (i * 40), w: 150, h: 20});
+                if(lvl > 2) obstacles.push({x: 350 * i + 50, y: 360 - (i * 40), w: 30, h: 20}); // 가시
+                if(lvl > 4) enemies.push({x: 400 * i, y: 340 - (i * 40), w: 30, h: 40, range: 100, startX: 400 * i, dir: 1});
+            }
 
-            // 4. 렌더러 설정
-            renderer = new THREE.WebGLRenderer({ antialias: true });
-            renderer.setPixelRatio(window.devicePixelRatio);
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            document.body.appendChild(renderer.domElement);
-
-            // 5. 컨트롤 설정 (1인칭 시점)
-            controls = new PointerLockControls(camera, document.body);
-            
-            const instructions = document.getElementById('instructions');
-
-            controls.addEventListener('lock', function () {
-                instructions.style.display = 'none';
-            });
-
-            controls.addEventListener('unlock', function () {
-                instructions.style.display = '';
-            });
-
-            // 화면 클릭 시 포인터 잠금 요청
-            document.addEventListener('click', function () {
-               if(!controls.isLocked) controls.lock();
-            }, false);
-
-            // 6. 초기 바닥 생성
-            createFloor();
-
-            // 7. 레이캐스터 설정 (블록 상호작용 용)
-            raycaster = new THREE.Raycaster();
-            raycaster.far = 10; // 너무 먼 곳은 클릭 안 되게 설정
-
-            // 이벤트 리스너 등록
-            document.addEventListener('keydown', onKeyDown);
-            document.addEventListener('keyup', onKeyUp);
-            document.addEventListener('mousedown', onMouseDown);
-            window.addEventListener('resize', onWindowResize);
+            return { platforms, obstacles, enemies, coins };
         }
 
-        function createFloor() {
-            const floorSize = 20;
-            for (let x = -floorSize / 2; x < floorSize / 2; x++) {
-                for (let z = -floorSize / 2; z < floorSize / 2; z++) {
-                    const voxel = new THREE.Mesh(boxGeometry, grassMaterial);
-                    voxel.position.set(x, 0, z);
-                    scene.add(voxel);
-                    objects.push(voxel);
+        let map = getLevelData(currentLevel);
+
+        function update() {
+            if (gameState !== "PLAY") return;
+
+            // 1. 좌우 이동
+            if (keys['ArrowRight']) { player.vx = MOVE_SPEED; player.facing = 1; }
+            else if (keys['ArrowLeft']) { player.vx = -MOVE_SPEED; player.facing = -1; }
+            else { player.vx *= 0.8; }
+
+            // 2. 중력 및 수직 이동
+            if (!player.isClimbing) {
+                player.vy += GRAVITY;
+            }
+            player.x += player.vx;
+            player.y += player.vy;
+
+            // 3. 바닥/발판 충돌 감지
+            player.isGrounded = false;
+            let onWall = false;
+
+            map.platforms.forEach(p => {
+                // 발판 위 충돌
+                if (player.x < p.x + p.w && player.x + player.w > p.x &&
+                    player.y + player.h > p.y && player.y + player.h < p.y + p.h + 10 && player.vy >= 0) {
+                    player.y = p.y - player.h;
+                    player.vy = 0;
+                    player.isGrounded = true;
+                    player.climbTimer = 0; // 바닥에 닿으면 벽타기 초기화
                 }
-            }
-        }
 
-        function onWindowResize() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        }
-
-        function onKeyDown(event) {
-            switch (event.code) {
-                case 'KeyW': moveForward = true; break;
-                case 'KeyA': moveLeft = true; break;
-                case 'KeyS': moveBackward = true; break;
-                case 'KeyD': moveRight = true; break;
-                case 'Space': moveUp = true; break;
-                case 'ShiftLeft': moveDown = true; break;
-            }
-        }
-
-        function onKeyUp(event) {
-            switch (event.code) {
-                case 'KeyW': moveForward = false; break;
-                case 'KeyA': moveLeft = false; break;
-                case 'KeyS': moveBackward = false; break;
-                case 'KeyD': moveRight = false; break;
-                case 'Space': moveUp = false; break;
-                case 'ShiftLeft': moveDown = false; break;
-            }
-        }
-
-        // 마우스 클릭 핸들러 (블록 설치/파괴)
-        function onMouseDown(event) {
-            if (!controls.isLocked) return;
-
-            // 화면 중앙에서 레이저 발사
-            raycaster.setFromCamera(new THREE.Vector2(), camera);
-            const intersects = raycaster.intersectObjects(objects, false);
-
-            if (intersects.length > 0) {
-                const intersect = intersects[0];
-
-                // 좌클릭 (버튼 0): 블록 파괴
-                if (event.button === 0) {
-                    if (intersect.object.position.y > 0) { // 바닥(y=0)은 파괴 못하게 막음 (선택사항)
-                        scene.remove(intersect.object);
-                        objects.splice(objects.indexOf(intersect.object), 1);
+                // 벽 충돌 (벽타기 로직)
+                if (player.x + player.w >= p.x && player.x <= p.x + p.w &&
+                    player.y + player.h > p.y && player.y < p.y + p.h) {
+                    if (!player.isGrounded && (keys['ArrowRight'] || keys['ArrowLeft'])) {
+                        onWall = true;
                     }
                 }
-                // 우클릭 (버튼 2): 블록 설치
-                else if (event.button === 2) {
-                    const voxel = new THREE.Mesh(boxGeometry, dirtMaterial);
-                    // 클릭한 지점의 면 법선 벡터를 이용해 새 블록 위치 계산
-                    voxel.position.copy(intersect.point).add(intersect.face.normal);
-                    voxel.position.divideScalar(1).floor().multiplyScalar(1).addScalar(0.5);
-                    
-                    scene.add(voxel);
-                    objects.push(voxel);
+            });
+
+            // 4. 벽타기 처리 (2초 제한)
+            if (onWall && player.climbTimer < CLIMB_TIME_LIMIT) {
+                player.isClimbing = true;
+                player.climbTimer++;
+                player.vy = keys['ArrowUp'] ? -2 : 0.5; // 매달리기 또는 천천히 하강
+            } else {
+                player.isClimbing = false;
+            }
+
+            // 5. 점프
+            if ((keys['Space'] || keys['KeyZ']) && (player.isGrounded || (onWall && player.climbTimer < CLIMB_TIME_LIMIT))) {
+                player.vy = JUMP_FORCE;
+                player.isGrounded = false;
+                if(onWall) player.climbTimer += 20; // 벽점프 시 패널티
+            }
+
+            // 6. 장애물 충돌 (가시, 농부)
+            map.obstacles.forEach(o => {
+                if (checkRectCollision(player, o)) die();
+            });
+
+            map.enemies.forEach(e => {
+                // 농부 움직임
+                e.x += e.dir * 2;
+                if (Math.abs(e.x - e.startX) > e.range) e.dir *= -1;
+                if (checkRectCollision(player, e)) die();
+            });
+
+            // 7. 코인 수집
+            map.coins.forEach(c => {
+                if (!c.collected && checkRectCollision(player, c)) {
+                    c.collected = true;
+                    coinsCollected++;
+                    coinDisplay.innerText = coinsCollected;
                 }
+            });
+
+            // 8. 클리어 조건
+            if (coinsCollected >= 5) {
+                nextLevel();
+            }
+
+            // 화면 밖으로 떨어지면 사망
+            if (player.y > canvas.height) die();
+        }
+
+        function checkRectCollision(r1, r2) {
+            return r1.x < r2.x + r2.w && r1.x + r1.w > r2.x && r1.y < r2.y + r2.h && r1.y + r1.h > r2.y;
+        }
+
+        function die() {
+            player.reset(50, 300);
+            coinsCollected = 0;
+            coinDisplay.innerText = 0;
+            map.coins.forEach(c => c.collected = false);
+        }
+
+        function nextLevel() {
+            if (currentLevel < 10) {
+                currentLevel++;
+                levelDisplay.innerText = currentLevel;
+                coinsCollected = 0;
+                coinDisplay.innerText = 0;
+                map = getLevelData(currentLevel);
+                player.reset(50, 300);
+                alert(`축하합니다! 레벨 ${currentLevel}로 이동합니다.`);
+            } else {
+                gameState = "SUCCESS";
+                alert("🎉 모든 모험을 마쳤습니다! 당신은 위대한 병아리입니다! 🎉");
             }
         }
 
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-        function animate() {
-            requestAnimationFrame(animate);
+            // 배경 구름 느낌 (간단)
+            ctx.fillStyle = "rgba(255,255,255,0.3)";
+            ctx.beginPath(); ctx.arc(100, 100, 40, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(600, 80, 30, 0, Math.PI*2); ctx.fill();
 
-            const delta = 0.015; // 프레임 간 시간 간격 (단순화)
+            // 발판 그림 (도트 스타일)
+            ctx.fillStyle = "#5d4037";
+            map.platforms.forEach(p => {
+                ctx.fillRect(p.x, p.y, p.w, p.h);
+                ctx.fillStyle = "#8bc34a"; // 풀 상단
+                ctx.fillRect(p.x, p.y, p.w, 5);
+                ctx.fillStyle = "#5d4037";
+            });
 
-            if (controls.isLocked === true) {
-                // 이동 속도 및 감속 설정
-                velocity.x -= velocity.x * 10.0 * delta;
-                velocity.z -= velocity.z * 10.0 * delta;
-                velocity.y -= velocity.y * 10.0 * delta;
+            // 가시 (🔺)
+            ctx.fillStyle = "#757575";
+            map.obstacles.forEach(o => {
+                ctx.beginPath();
+                ctx.moveTo(o.x, o.y + o.h);
+                ctx.lineTo(o.x + o.w/2, o.y);
+                ctx.lineTo(o.x + o.w, o.y + o.h);
+                ctx.fill();
+            });
 
-                direction.z = Number(moveForward) - Number(moveBackward);
-                direction.x = Number(moveRight) - Number(moveLeft);
-                direction.y = Number(moveUp) - Number(moveDown);
-                direction.normalize(); // 대각선 이동 속도 일정하게
+            // 농부 (👨‍🌾)
+            map.enemies.forEach(e => {
+                ctx.font = "30px Arial";
+                ctx.fillText("👨‍🌾", e.x, e.y + 30);
+            });
 
-                const speed = 10.0;
-                if (moveForward || moveBackward) velocity.z -= direction.z * speed * delta;
-                if (moveLeft || moveRight) velocity.x -= direction.x * speed * delta;
-                if (moveUp || moveDown) velocity.y += direction.y * speed * delta;
+            // 코인 (💰)
+            map.coins.forEach(c => {
+                if (!c.collected) {
+                    ctx.font = "20px Arial";
+                    ctx.fillText("💰", c.x, c.y + 20);
+                }
+            });
 
-                controls.moveRight(-velocity.x * delta);
-                controls.moveForward(-velocity.z * delta);
-                camera.position.y += velocity.y * delta;
+            // 병아리 (🐥)
+            ctx.save();
+            if (player.facing === -1) { // 왼쪽 볼 때 반전
+                ctx.translate(player.x + player.w, player.y);
+                ctx.scale(-1, 1);
+                ctx.font = "30px Arial";
+                ctx.fillText("🐥", 0, 25);
+            } else {
+                ctx.font = "30px Arial";
+                ctx.fillText("🐥", player.x, player.y + 25);
             }
+            ctx.restore();
 
-            renderer.render(scene, camera);
+            // 벽타기 게이지 표시 (벽에 붙었을 때만)
+            if (player.isClimbing) {
+                ctx.fillStyle = "red";
+                const gaugeWidth = (1 - (player.climbTimer / CLIMB_TIME_LIMIT)) * 30;
+                ctx.fillRect(player.x, player.y - 10, gaugeWidth, 5);
+            }
         }
+
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        gameLoop();
     </script>
 </body>
 </html>
